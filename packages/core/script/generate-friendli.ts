@@ -48,8 +48,8 @@ const familyPatterns: [RegExp, string][] = [
   [/llama-4/i, "llama-4"],
   [/qwen3/i, "qwen3"],
   [/deepseek-r1/i, "deepseek-r1"],
-  [/exaone/i, "exaone"],
   [/glm-4/i, "glm-4"],
+  [/glm-5/i, "glm"],
 ];
 
 function inferFamily(modelId: string, modelName: string): string | undefined {

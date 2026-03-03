@@ -8,6 +8,7 @@ export const ModelFamilyValues = [
   // OpenAI/GPT style
   "gpt",
   "gpt-codex",
+  "gpt-codex-spark",
   "gpt-codex-mini",
   "gpt-pro",
   "gpt-mini",
@@ -127,9 +128,6 @@ export const ModelFamilyValues = [
   "solar-mini",
   "solar-pro",
 
-  // Exaone
-  "exaone",
-
   // Step (StepFun)
   "step",
 
@@ -183,6 +181,9 @@ export const ModelFamilyValues = [
 
   // Sherlock
   "sherlock",
+
+  // Pony
+  "pony",
 
   // Mercury
   "mercury",
@@ -360,7 +361,10 @@ export const ModelFamilyValues = [
   "sourceful",
 
   // AllenAI
-  "allenai"
+  "allenai",
+
+  // Writer
+  "palmyra",
 ] as const;
 
 export const ModelFamily = z.enum(ModelFamilyValues);

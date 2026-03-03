@@ -3,29 +3,10 @@
 import { z } from "zod";
 import path from "node:path";
 import { readdir } from "node:fs/promises";
-import * as readline from "node:readline";
 import { ModelFamilyValues } from "../src/family.js";
 
 // Venice API endpoint
 const API_ENDPOINT = "https://api.venice.ai/api/v1/models?type=text";
-
-async function promptForApiKey(): Promise<string | null> {
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stdout,
-  });
-
-  return new Promise((resolve) => {
-    rl.question(
-      "Enter Venice API key to include alpha models (or press Enter to skip): ",
-      (answer) => {
-        rl.close();
-        const trimmed = answer.trim();
-        resolve(trimmed.length > 0 ? trimmed : null);
-      },
-    );
-  });
-}
 
 // Zod schemas for API response validation
 const Capabilities = z
@@ -43,12 +24,25 @@ const Capabilities = z
   })
   .passthrough();
 
+const PricingTier = z.object({ usd: z.number(), diem: z.number().optional() }).passthrough();
+
+const ExtendedPricing = z
+  .object({
+    context_token_threshold: z.number(),
+    input: PricingTier,
+    output: PricingTier,
+    cache_input: PricingTier.optional(),
+    cache_write: PricingTier.optional(),
+  })
+  .passthrough();
+
 const Pricing = z
   .object({
-    input: z.object({ usd: z.number(), diem: z.number().optional() }).passthrough(),
-    output: z.object({ usd: z.number(), diem: z.number().optional() }).passthrough(),
-    cache_input: z.object({ usd: z.number(), diem: z.number().optional() }).passthrough().optional(),
-    cache_write: z.object({ usd: z.number(), diem: z.number().optional() }).passthrough().optional(),
+    input: PricingTier,
+    output: PricingTier,
+    cache_input: PricingTier.optional(),
+    cache_write: PricingTier.optional(),
+    extended: ExtendedPricing.optional(),
   })
   .passthrough();
 
@@ -56,11 +50,13 @@ const ModelSpec = z
   .object({
     pricing: Pricing.optional(),
     availableContextTokens: z.number(),
+    maxCompletionTokens: z.number().optional(),
     capabilities: Capabilities,
     constraints: z.any().optional(),
     name: z.string(),
     modelSource: z.string().optional(),
     offline: z.boolean().optional(),
+    privacy: z.string().optional(),
     traits: z.array(z.string()).optional(),
   })
   .passthrough();
@@ -161,6 +157,12 @@ interface ExistingModel {
     reasoning?: number;
     cache_read?: number;
     cache_write?: number;
+    context_over_200k?: {
+      input?: number;
+      output?: number;
+      cache_read?: number;
+      cache_write?: number;
+    };
   };
   limit?: {
     context?: number;
@@ -212,6 +214,12 @@ interface MergedModel {
     output: number;
     cache_read?: number;
     cache_write?: number;
+    context_over_200k?: {
+      input: number;
+      output: number;
+      cache_read?: number;
+      cache_write?: number;
+    };
   };
   limit: {
     context: number;
@@ -231,29 +239,24 @@ function mergeModel(
   const caps = spec.capabilities;
 
   const contextTokens = spec.availableContextTokens;
-  const outputTokens = Math.floor(contextTokens / 4);
+  const outputTokens = spec.maxCompletionTokens ?? Math.floor(contextTokens / 4);
 
-  // Determine open_weights from modelSource
   const openWeights = spec.modelSource
     ? spec.modelSource.toLowerCase().includes("huggingface")
-    : false;
+    : spec.privacy === "private";
 
-  // Build input modalities from API (no auto-PDF)
   const inputModalities = buildInputModalities(caps);
 
-  // Check if existing has PDF in modalities - preserve it
   if (existing?.modalities?.input?.includes("pdf") && !inputModalities.includes("pdf")) {
     inputModalities.push("pdf");
   }
 
-  // Determine attachment based on vision/audio/video support
   const attachment =
     caps.supportsVision === true ||
     caps.supportsAudioInput === true ||
     caps.supportsVideoInput === true;
 
   const merged: MergedModel = {
-    // Always from API
     name: spec.name,
     attachment,
     reasoning: caps.supportsReasoning === true,
@@ -285,6 +288,16 @@ function mergeModel(
       ...(spec.pricing.cache_input && { cache_read: spec.pricing.cache_input.usd }),
       ...(spec.pricing.cache_write && { cache_write: spec.pricing.cache_write.usd }),
     };
+
+    // Extended pricing maps to context_over_200k
+    if (spec.pricing.extended) {
+      merged.cost.context_over_200k = {
+        input: spec.pricing.extended.input.usd,
+        output: spec.pricing.extended.output.usd,
+        ...(spec.pricing.extended.cache_input && { cache_read: spec.pricing.extended.cache_input.usd }),
+        ...(spec.pricing.extended.cache_write && { cache_write: spec.pricing.extended.cache_write.usd }),
+      };
+    }
   }
 
   const inferred = inferFamily(apiModel.id, spec.name);
@@ -352,6 +365,19 @@ function formatToml(model: MergedModel): string {
     if (model.cost.cache_write !== undefined) {
       lines.push(`cache_write = ${model.cost.cache_write}`);
     }
+
+    if (model.cost.context_over_200k) {
+      lines.push("");
+      lines.push(`[cost.context_over_200k]`);
+      lines.push(`input = ${model.cost.context_over_200k.input}`);
+      lines.push(`output = ${model.cost.context_over_200k.output}`);
+      if (model.cost.context_over_200k.cache_read !== undefined) {
+        lines.push(`cache_read = ${model.cost.context_over_200k.cache_read}`);
+      }
+      if (model.cost.context_over_200k.cache_write !== undefined) {
+        lines.push(`cache_write = ${model.cost.context_over_200k.cache_write}`);
+      }
+    }
   }
 
   // Limit section
@@ -414,6 +440,10 @@ function detectChanges(
   compare("cost.output", existing.cost?.output, merged.cost?.output);
   compare("cost.cache_read", existing.cost?.cache_read, merged.cost?.cache_read);
   compare("cost.cache_write", existing.cost?.cache_write, merged.cost?.cache_write);
+  compare("cost.context_over_200k.input", existing.cost?.context_over_200k?.input, merged.cost?.context_over_200k?.input);
+  compare("cost.context_over_200k.output", existing.cost?.context_over_200k?.output, merged.cost?.context_over_200k?.output);
+  compare("cost.context_over_200k.cache_read", existing.cost?.context_over_200k?.cache_read, merged.cost?.context_over_200k?.cache_read);
+  compare("cost.context_over_200k.cache_write", existing.cost?.context_over_200k?.cache_write, merged.cost?.context_over_200k?.cache_write);
   compare("limit.context", existing.limit?.context, merged.limit.context);
   compare("limit.output", existing.limit?.output, merged.limit.output);
   compare("modalities.input", existing.modalities?.input, merged.modalities.input);
@@ -435,7 +465,7 @@ async function main() {
     "models",
   );
 
-  // Check for API key from CLI argument, environment, or prompt
+  // Check for API key from CLI argument or environment variable
   let apiKey: string | null = null;
 
   // Check CLI args for --api-key=xxx or --api-key xxx
@@ -452,11 +482,6 @@ async function main() {
   // Fall back to environment variable
   if (!apiKey) {
     apiKey = process.env.VENICE_API_KEY ?? null;
-  }
-
-  // Prompt if still no key
-  if (!apiKey) {
-    apiKey = await promptForApiKey();
   }
 
   const includeAlpha = apiKey !== null;
