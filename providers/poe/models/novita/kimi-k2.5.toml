@@ -2,15 +2,15 @@ name = "Kimi-K2.5"
 release_date = "2026-01-27"
 last_updated = "2026-01-27"
 attachment = true
-reasoning = true
+reasoning = false
 temperature = true
 open_weights = false
 tool_call = true
 
 [cost]
-input = 0.6
-output = 3
-cache_read = 0.1
+input = 0.6061
+output = 3.0303
+cache_read = 0.101
 
 [limit]
 context = 128_000
